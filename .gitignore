@@ -39,3 +39,35 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Backend files
+backend/uploads/
+backend/reports/
+backend/predictions.db
+backend/*.db
+uploads/
+reports/
+*.db
+
+# Test files
+test_*.py
+test_*.js
+start-backend.bat
+
+# ML Models (large files)
+*.h5
+*.keras
+Skin-Lesions-Detection-Deep-learning/
+
+# Generated files
+placeholder.svg

@@ -15,14 +15,93 @@ interface UploadedFile {
   preview: string
   id: string
   progress: number
-  status: "uploading" | "completed" | "error"
+  status: "uploading" | "completed" | "error" | "analyzing"
+  predictionResult?: PredictionResult
+  error?: string
 }
+
+interface PredictionResult {
+  prediction_id: number
+  result: {
+    predicted_class: number
+    class_name: string
+    confidence: number
+    risk_level: string
+    risk_color: string
+    description: string
+    is_malignant: boolean
+    all_probabilities: Record<string, number>
+  }
+  image_info: {
+    width: number
+    height: number
+    format: string
+    size_bytes: number
+  }
+  display_image_url: string
+  processing_time: number
+  timestamp: string
+}
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000'
 
 export function UploadContent() {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
   const [selectedFile, setSelectedFile] = useState<UploadedFile | null>(null)
-  const [isScanning, setIsScanning] = useState(false)
   const router = useRouter()
+
+  // Upload file to backend
+  const uploadFileToBackend = async (file: File, fileId: string) => {
+    try {
+      const formData = new FormData()
+      formData.append('image', file)
+
+      console.log('Uploading to:', `${API_BASE_URL}/api/predict`)
+      console.log('File:', file.name, 'Size:', file.size)
+
+      const response = await fetch(`${API_BASE_URL}/api/predict`, {
+        method: 'POST',
+        mode: 'cors',
+        body: formData,
+      })
+
+      if (!response.ok) {
+        throw new Error(`Upload failed: ${response.statusText}`)
+      }
+
+      const result: PredictionResult = await response.json()
+      
+      setUploadedFiles((prev) =>
+        prev.map((f) =>
+          f.id === fileId
+            ? { 
+                ...f, 
+                progress: 100, 
+                status: "completed", 
+                predictionResult: result 
+              }
+            : f
+        )
+      )
+
+      return result
+
+    } catch (error) {
+      console.error('Upload error:', error)
+      setUploadedFiles((prev) =>
+        prev.map((f) =>
+          f.id === fileId
+            ? { 
+                ...f, 
+                status: "error", 
+                error: error instanceof Error ? error.message : 'Upload failed' 
+              }
+            : f
+        )
+      )
+      throw error
+    }
+  }
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const newFiles = acceptedFiles.map((file) => ({
@@ -35,28 +114,30 @@ export function UploadContent() {
 
     setUploadedFiles((prev) => [...prev, ...newFiles])
 
-    // Simulate upload progress
-    newFiles.forEach((uploadFile) => {
-      const interval = setInterval(() => {
+    // Upload each file to backend
+    newFiles.forEach(async (uploadFile) => {
+      // Simulate upload progress for UI
+      const progressInterval = setInterval(() => {
         setUploadedFiles((prev) =>
           prev.map((f) =>
-            f.id === uploadFile.id
+            f.id === uploadFile.id && f.status === "uploading"
               ? {
                   ...f,
-                  progress: Math.min(f.progress + 10, 100),
-                  status: f.progress >= 90 ? "completed" : "uploading",
+                  progress: Math.min(f.progress + Math.random() * 15, 85),
                 }
               : f,
           ),
         )
-      }, 200)
+      }, 300)
 
-      setTimeout(() => {
-        clearInterval(interval)
-        setUploadedFiles((prev) =>
-          prev.map((f) => (f.id === uploadFile.id ? { ...f, progress: 100, status: "completed" } : f)),
-        )
-      }, 2000)
+      try {
+        // Upload to backend
+        await uploadFileToBackend(uploadFile.file, uploadFile.id)
+        clearInterval(progressInterval)
+      } catch (error) {
+        clearInterval(progressInterval)
+        console.error('Failed to upload file:', uploadFile.file.name, error)
+      }
     })
   }, [])
 
@@ -78,16 +159,23 @@ export function UploadContent() {
     })
   }
 
-  const handleScanNow = async () => {
-    if (!selectedFile) return
+  const handleAnalyzeAgain = async (fileId: string) => {
+    const file = uploadedFiles.find(f => f.id === fileId)
+    if (!file) return
 
-    setIsScanning(true)
-    // Simulate scanning process
-    await new Promise((resolve) => setTimeout(resolve, 3000))
-    setIsScanning(false)
+    setUploadedFiles((prev) =>
+      prev.map((f) =>
+        f.id === fileId
+          ? { ...f, status: "analyzing", progress: 0, predictionResult: undefined, error: undefined }
+          : f
+      )
+    )
 
-    // Navigate to results page with the scanned image
-    router.push("/results")
+    try {
+      await uploadFileToBackend(file.file, fileId)
+    } catch (error) {
+      console.error('Re-analysis failed:', error)
+    }
   }
 
   const completedFiles = uploadedFiles.filter((f) => f.status === "completed")
@@ -150,13 +238,31 @@ export function UploadContent() {
                 {uploadedFiles.map((file) => (
                   <div key={file.id} className="flex items-center gap-3 p-3 rounded-lg border">
                     <div className="flex-shrink-0">
-                      {file.status === "completed" ? (
+                      {file.status === "completed" && file.predictionResult ? (
+                        <div className={cn(
+                          "p-2 rounded",
+                          file.predictionResult.result.is_malignant 
+                            ? "bg-red-100" 
+                            : "bg-green-100"
+                        )}>
+                          <CheckCircle2 className={cn(
+                            "h-4 w-4",
+                            file.predictionResult.result.is_malignant 
+                              ? "text-red-600" 
+                              : "text-green-600"
+                          )} />
+                        </div>
+                      ) : file.status === "completed" ? (
                         <div className="p-2 rounded bg-green-100">
                           <CheckCircle2 className="h-4 w-4 text-green-600" />
                         </div>
                       ) : file.status === "error" ? (
                         <div className="p-2 rounded bg-red-100">
                           <AlertCircle className="h-4 w-4 text-red-600" />
+                        </div>
+                      ) : file.status === "analyzing" ? (
+                        <div className="p-2 rounded bg-purple-100">
+                          <Loader2 className="h-4 w-4 text-purple-600 animate-spin" />
                         </div>
                       ) : (
                         <div className="p-2 rounded bg-blue-100">
@@ -166,13 +272,51 @@ export function UploadContent() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="font-medium text-sm truncate">{file.file.name}</p>
-                      <p className="text-xs text-gray-500">{(file.file.size / 1024 / 1024).toFixed(2)} MB</p>
+                      <div className="flex items-center gap-2">
+                        <p className="text-xs text-gray-500">{(file.file.size / 1024 / 1024).toFixed(2)} MB</p>
+                        {file.predictionResult && (
+                          <span className={cn(
+                            "text-xs px-2 py-0.5 rounded-full font-medium",
+                            file.predictionResult.result.is_malignant 
+                              ? "bg-red-100 text-red-700"
+                              : "bg-green-100 text-green-700"
+                          )}>
+                            {file.predictionResult.result.class_name}
+                          </span>
+                        )}
+                      </div>
                       {file.status === "uploading" && <Progress value={file.progress} className="mt-2 h-1" />}
+                      {file.status === "analyzing" && <Progress value={75} className="mt-2 h-1" />}
+                      {file.error && (
+                        <p className="text-xs text-red-500 mt-1">{file.error}</p>
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs text-gray-500">
-                        {file.status === "completed" ? "100%" : `${file.progress}%`}
-                      </span>
+                      {file.status === "completed" && file.predictionResult ? (
+                        <div className="flex flex-col items-end gap-1">
+                          <span className="text-xs font-medium text-gray-700">
+                            {(file.predictionResult.result.confidence * 100).toFixed(1)}%
+                          </span>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              sessionStorage.setItem('currentPrediction', JSON.stringify(file.predictionResult))
+                              router.push("/results")
+                            }}
+                            className="text-blue-600 hover:text-blue-800 text-xs px-2 py-1 h-auto"
+                          >
+                            View Results
+                          </Button>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-gray-500">
+                          {file.status === "completed" ? "100%" : 
+                           file.status === "analyzing" ? "Analyzing..." :
+                           file.status === "error" ? "Error" :
+                           `${file.progress}%`}
+                        </span>
+                      )}
                       <Button
                         variant="ghost"
                         size="sm"
@@ -252,24 +396,99 @@ export function UploadContent() {
                         <span className="text-gray-600">File type:</span>
                         <span>{selectedFile.file.type}</span>
                       </div>
-                      <Button
-                        onClick={handleScanNow}
-                        disabled={isScanning}
-                        className="w-full bg-blue-600 hover:bg-blue-700"
-                        size="lg"
-                      >
-                        {isScanning ? (
-                          <>
-                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                            Analyzing Image...
-                          </>
-                        ) : (
-                          <>
+                      {selectedFile?.predictionResult ? (
+                        <div className="space-y-3">
+                          <div className={cn(
+                            "p-4 rounded-lg border-2",
+                            selectedFile.predictionResult.result.is_malignant 
+                              ? "border-red-200 bg-red-50"
+                              : "border-green-200 bg-green-50"
+                          )}>
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="font-medium text-sm">Analysis Result</span>
+                              <span className={cn(
+                                "text-xs px-2 py-1 rounded-full font-medium",
+                                selectedFile.predictionResult.result.is_malignant 
+                                  ? "bg-red-100 text-red-700"
+                                  : "bg-green-100 text-green-700"
+                              )}>
+                                {selectedFile.predictionResult.result.risk_level}
+                              </span>
+                            </div>
+                            <p className="font-semibold text-sm mb-1">
+                              {selectedFile.predictionResult.result.class_name}
+                            </p>
+                            <p className="text-xs text-gray-600 mb-2">
+                              {selectedFile.predictionResult.result.description}
+                            </p>
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs text-gray-600">
+                                Confidence: {(selectedFile.predictionResult.result.confidence * 100).toFixed(1)}%
+                              </span>
+                              <span className="text-xs text-gray-600">
+                                {selectedFile.predictionResult.processing_time.toFixed(2)}s
+                              </span>
+                            </div>
+                          </div>
+                          
+                          <div className="flex gap-2">
+                            <Button
+                              onClick={() => {
+                                sessionStorage.setItem('currentPrediction', JSON.stringify(selectedFile.predictionResult))
+                                router.push("/results")
+                              }}
+                              className="flex-1 bg-blue-600 hover:bg-blue-700"
+                            >
+                              <FileImage className="h-4 w-4 mr-2" />
+                              View Detailed Results
+                            </Button>
+                            <Button
+                              variant="outline"
+                              onClick={() => handleAnalyzeAgain(selectedFile.id)}
+                              disabled={selectedFile.status === "analyzing"}
+                            >
+                              {selectedFile.status === "analyzing" ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                "Re-analyze"
+                              )}
+                            </Button>
+                          </div>
+                        </div>
+                      ) : selectedFile?.status === "analyzing" ? (
+                        <Button
+                          disabled
+                          className="w-full bg-purple-600"
+                          size="lg"
+                        >
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Analyzing Image...
+                        </Button>
+                      ) : selectedFile?.status === "error" ? (
+                        <div className="space-y-3">
+                          <div className="p-4 rounded-lg border-2 border-red-200 bg-red-50">
+                            <p className="font-medium text-sm text-red-800 mb-1">Analysis Failed</p>
+                            <p className="text-xs text-red-600">{selectedFile.error}</p>
+                          </div>
+                          <Button
+                            onClick={() => handleAnalyzeAgain(selectedFile.id)}
+                            className="w-full bg-blue-600 hover:bg-blue-700"
+                            size="lg"
+                          >
                             <FileImage className="h-4 w-4 mr-2" />
-                            Scan Now
-                          </>
-                        )}
-                      </Button>
+                            Try Again
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="text-center py-4">
+                          <p className="text-sm text-gray-500 mb-2">
+                            Image analysis will start automatically after upload completes
+                          </p>
+                          <div className="animate-pulse flex justify-center">
+                            <Loader2 className="h-6 w-6 text-blue-600 animate-spin" />
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </CardContent>
                 </Card>

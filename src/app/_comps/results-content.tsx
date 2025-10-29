@@ -1,6 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -25,46 +26,33 @@ import {
 import Image from "next/image"
 import Link from "next/link"
 
-// Mock data - in real app this would come from API
-const analysisResult = {
-  id: "scan_001",
-  timestamp: "2024-01-15T10:30:00Z",
-  image: "/skin-lesion-medical-scan.jpg",
-  primaryDiagnosis: {
-    condition: "Melanoma",
-    confidence: 87,
-    riskLevel: "high",
-    description: "Suspicious pigmented lesion with irregular borders and color variation",
-  },
-  alternativeDiagnoses: [
-    { condition: "Atypical Nevus", confidence: 23, riskLevel: "medium" },
-    { condition: "Seborrheic Keratosis", confidence: 15, riskLevel: "low" },
-    { condition: "Benign Mole", confidence: 8, riskLevel: "low" },
-  ],
-  recommendations: [
-    {
-      priority: "urgent",
-      action: "Consult a dermatologist immediately",
-      description: "Schedule an appointment within 1-2 weeks for professional evaluation",
-    },
-    {
-      priority: "important",
-      action: "Biopsy recommended",
-      description: "A tissue sample may be needed for definitive diagnosis",
-    },
-    {
-      priority: "monitor",
-      action: "Regular monitoring",
-      description: "Take photos monthly to track any changes in size, shape, or color",
-    },
-  ],
-  technicalDetails: {
-    imageQuality: "Excellent",
-    processingTime: "2.3 seconds",
-    modelVersion: "SkinAI v3.2",
-    analysisDepth: "Deep learning with 15 layer CNN",
-  },
+// Types for ML prediction results
+interface PredictionResult {
+  prediction_id: string
+  filename: string
+  result: {
+    class_name: string
+    confidence: number
+    description: string
+    is_malignant: boolean
+    risk_level: string
+    all_predictions: Array<{
+      class_name: string
+      confidence: number
+      description: string
+    }>
+  }
+  image_info: {
+    width: number
+    height: number
+    format: string
+    size_bytes: number
+  }
+  processing_time: number
+  timestamp: string
 }
+
+
 
 const getRiskColor = (riskLevel: string) => {
   switch (riskLevel) {
@@ -106,7 +94,45 @@ const getPriorityColor = (priority: string) => {
 }
 
 export function ResultsContent() {
-  const [activeTab, setActiveTab] = useState<"overview" | "detailed" | "recommendations">("overview")
+  const [predictionResult, setPredictionResult] = useState<PredictionResult | null>(null)
+  const [imageUrl, setImageUrl] = useState<string>("")
+  const [loading, setLoading] = useState(true)
+  const [noData, setNoData] = useState(false)
+  const router = useRouter()
+
+  useEffect(() => {
+    // First check session storage for current prediction
+    const storedResult = sessionStorage.getItem('currentPrediction')
+    
+    if (storedResult) {
+      const result = JSON.parse(storedResult)
+      setPredictionResult(result)
+      // Create image URL for display
+      setImageUrl(`http://localhost:5000/api/image/${result.filename}`)
+      setLoading(false)
+    } else {
+      // If no session data, try to get the latest prediction from backend
+      fetch('http://localhost:5000/api/predictions')
+        .then(response => response.json())
+        .then(data => {
+          if (data.predictions && data.predictions.length > 0) {
+            // Get the most recent prediction
+            const latestPrediction = data.predictions[0]
+            setPredictionResult(latestPrediction)
+            setImageUrl(`http://localhost:5000/api/image/${latestPrediction.filename}`)
+          } else {
+            // No predictions found, show empty state
+            setNoData(true)
+          }
+          setLoading(false)
+        })
+        .catch(error => {
+          console.error('Error fetching predictions:', error)
+          setNoData(true)
+          setLoading(false)
+        })
+    }
+  }, [router])
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString("en-US", {
@@ -118,7 +144,86 @@ export function ResultsContent() {
     })
   }
 
-  const RiskIcon = getRiskIcon(analysisResult.primaryDiagnosis.riskLevel)
+  const getRecommendations = (ismalignant: boolean, confidence: number) => {
+    const baseRecommendations = []
+    
+    if (ismalignant || confidence > 0.7) {
+      baseRecommendations.push({
+        priority: "urgent",
+        action: "Consult a dermatologist immediately",
+        description: "Schedule an appointment within 1-2 weeks for professional evaluation"
+      })
+      
+      if (ismalignant) {
+        baseRecommendations.push({
+          priority: "important", 
+          action: "Biopsy may be recommended",
+          description: "A tissue sample may be needed for definitive diagnosis"
+        })
+      }
+    } else {
+      baseRecommendations.push({
+        priority: "important",
+        action: "Monitor the lesion regularly", 
+        description: "Take photos monthly to track any changes in size, shape, or color"
+      })
+    }
+    
+    baseRecommendations.push({
+      priority: "monitor",
+      action: "Follow ABCDE rule",
+      description: "Watch for Asymmetry, Border irregularity, Color variation, Diameter >6mm, Evolution"
+    })
+    
+    return baseRecommendations
+  }
+
+  if (loading) {
+    return (
+      <div className="p-6 space-y-6">
+        <div className="flex items-center justify-center h-64">
+          <div className="animate-pulse text-gray-500">Loading results...</div>
+        </div>
+      </div>
+    )
+  }
+
+  if (noData || !predictionResult) {
+    return (
+      <div className="p-6 space-y-6">
+        <div className="text-center py-12">
+          <div className="mb-6">
+            <FileText className="h-16 w-16 mx-auto text-gray-400 mb-4" />
+          </div>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">No Analysis Results</h2>
+          <p className="text-gray-600 mb-6 max-w-md mx-auto">
+            {noData 
+              ? "No skin lesion analyses have been performed yet. Upload an image to get started with AI-powered dermatological analysis."
+              : "Please upload and analyze an image first."
+            }
+          </p>
+          <div className="space-x-4">
+            <Link href="/upload">
+              <Button className="bg-blue-600 hover:bg-blue-700">
+                <Upload className="h-4 w-4 mr-2" />
+                Start Analysis
+              </Button>
+            </Link>
+            <Link href="/history">
+              <Button variant="outline">
+                <Eye className="h-4 w-4 mr-2" />
+                View History
+              </Button>
+            </Link>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const result = predictionResult.result
+  const recommendations = getRecommendations(result.is_malignant, result.confidence)
+  const RiskIcon = getRiskIcon(result.risk_level.toLowerCase())
 
   return (
     <div className="p-6 space-y-6">
@@ -129,9 +234,15 @@ export function ResultsContent() {
           <p className="text-gray-600 mt-1">AI-powered skin condition analysis completed</p>
         </div>
         <div className="flex items-center gap-3">
-          <Button variant="outline" className="flex items-center gap-2 bg-transparent">
+          <Button 
+            variant="outline" 
+            className="flex items-center gap-2 bg-transparent"
+            onClick={() => {
+              window.open(`http://localhost:5000/api/report/${predictionResult.prediction_id}`, '_blank')
+            }}
+          >
             <Download className="h-4 w-4" />
-            Download Report
+            Download PDF Report
           </Button>
           <Button variant="outline" className="flex items-center gap-2 bg-transparent">
             <Share2 className="h-4 w-4" />
@@ -156,12 +267,12 @@ export function ResultsContent() {
                     Primary Analysis
                   </CardTitle>
                   <CardDescription>
-                    Scan ID: {analysisResult.id} • {formatDate(analysisResult.timestamp)}
+                    Scan ID: {predictionResult.prediction_id} • {formatDate(predictionResult.timestamp)}
                   </CardDescription>
                 </div>
-                <Badge className={getRiskColor(analysisResult.primaryDiagnosis.riskLevel)}>
+                <Badge className={getRiskColor(result.risk_level.toLowerCase())}>
                   <RiskIcon className="h-3 w-3 mr-1" />
-                  {analysisResult.primaryDiagnosis.riskLevel.toUpperCase()} RISK
+                  {result.risk_level.toUpperCase()} RISK
                 </Badge>
               </div>
             </CardHeader>
@@ -169,7 +280,7 @@ export function ResultsContent() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="relative aspect-square rounded-lg overflow-hidden bg-gray-100">
                   <Image
-                    src={analysisResult.image || "/placeholder.svg"}
+                    src={imageUrl || "/placeholder.svg"}
                     alt="Analyzed skin lesion"
                     fill
                     className="object-cover"
@@ -178,29 +289,29 @@ export function ResultsContent() {
                 <div className="space-y-4">
                   <div>
                     <h3 className="text-2xl font-bold text-gray-900 mb-2">
-                      {analysisResult.primaryDiagnosis.condition}
+                      {result.class_name}
                     </h3>
-                    <p className="text-gray-600 mb-4">{analysisResult.primaryDiagnosis.description}</p>
+                    <p className="text-gray-600 mb-4">{result.description}</p>
                   </div>
 
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <span className="text-sm font-medium text-gray-700">Confidence Level</span>
                       <span className="text-sm font-bold text-gray-900">
-                        {analysisResult.primaryDiagnosis.confidence}%
+                        {(result.confidence * 100).toFixed(1)}%
                       </span>
                     </div>
-                    <Progress value={analysisResult.primaryDiagnosis.confidence} className="h-2" />
+                    <Progress value={result.confidence * 100} className="h-2" />
                   </div>
 
                   <div className="pt-4 border-t">
                     <div className="flex items-center gap-2 text-sm text-gray-600 mb-2">
                       <Zap className="h-4 w-4" />
-                      <span>Analysis powered by {analysisResult.technicalDetails.modelVersion}</span>
+                      <span>Analysis powered by DenseNet201 v1.0</span>
                     </div>
                     <div className="flex items-center gap-2 text-sm text-gray-600">
                       <Clock className="h-4 w-4" />
-                      <span>Processed in {analysisResult.technicalDetails.processingTime}</span>
+                      <span>Processed in {predictionResult.processing_time.toFixed(2)} seconds</span>
                     </div>
                   </div>
                 </div>
@@ -219,28 +330,34 @@ export function ResultsContent() {
             </CardHeader>
             <CardContent>
               <div className="space-y-3">
-                {analysisResult.alternativeDiagnoses.map((diagnosis, index) => {
-                  const AltRiskIcon = getRiskIcon(diagnosis.riskLevel)
-                  return (
-                    <div key={index} className="flex items-center justify-between p-3 rounded-lg border">
-                      <div className="flex items-center gap-3">
-                        <div className={`p-2 rounded-full ${getRiskColor(diagnosis.riskLevel)}`}>
-                          <AltRiskIcon className="h-4 w-4" />
+                {result.all_predictions
+                  .filter(pred => pred.class_name !== result.class_name)
+                  .slice(0, 4)
+                  .map((prediction, index) => {
+                    // Determine risk level based on class name and confidence
+                    const riskLevel = prediction.class_name.toLowerCase().includes('melanoma') ? 'high' : 
+                                     prediction.confidence > 0.5 ? 'medium' : 'low'
+                    const AltRiskIcon = getRiskIcon(riskLevel)
+                    return (
+                      <div key={index} className="flex items-center justify-between p-3 rounded-lg border">
+                        <div className="flex items-center gap-3">
+                          <div className={`p-2 rounded-full ${getRiskColor(riskLevel)}`}>
+                            <AltRiskIcon className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <p className="font-medium text-gray-900">{prediction.class_name}</p>
+                            <p className="text-sm text-gray-500 capitalize">{riskLevel} risk</p>
+                          </div>
                         </div>
-                        <div>
-                          <p className="font-medium text-gray-900">{diagnosis.condition}</p>
-                          <p className="text-sm text-gray-500 capitalize">{diagnosis.riskLevel} risk</p>
+                        <div className="text-right">
+                          <p className="font-bold text-gray-900">{(prediction.confidence * 100).toFixed(1)}%</p>
+                          <div className="w-16 mt-1">
+                            <Progress value={prediction.confidence * 100} className="h-1" />
+                          </div>
                         </div>
                       </div>
-                      <div className="text-right">
-                        <p className="font-bold text-gray-900">{diagnosis.confidence}%</p>
-                        <div className="w-16 mt-1">
-                          <Progress value={diagnosis.confidence} className="h-1" />
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })}
+                    )
+                  })}
               </div>
             </CardContent>
           </Card>
@@ -257,7 +374,7 @@ export function ResultsContent() {
               <CardDescription>Suggested next steps based on analysis</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {analysisResult.recommendations.map((rec, index) => (
+              {recommendations.map((rec, index) => (
                 <div
                   key={index}
                   className="p-4 rounded-lg border-l-4"
@@ -286,19 +403,23 @@ export function ResultsContent() {
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="flex justify-between text-sm">
-                <span className="text-gray-600">Image Quality:</span>
-                <span className="font-medium">{analysisResult.technicalDetails.imageQuality}</span>
+                <span className="text-gray-600">Image Size:</span>
+                <span className="font-medium">{predictionResult.image_info.width}×{predictionResult.image_info.height}</span>
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-gray-600">Model Version:</span>
-                <span className="font-medium">{analysisResult.technicalDetails.modelVersion}</span>
+                <span className="font-medium">DenseNet201 v1.0</span>
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-gray-600">Processing Time:</span>
-                <span className="font-medium">{analysisResult.technicalDetails.processingTime}</span>
+                <span className="font-medium">{predictionResult.processing_time.toFixed(2)}s</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">File Size:</span>
+                <span className="font-medium">{(predictionResult.image_info.size_bytes / 1024).toFixed(1)} KB</span>
               </div>
               <div className="pt-3 border-t">
-                <p className="text-xs text-gray-500">{analysisResult.technicalDetails.analysisDepth}</p>
+                <p className="text-xs text-gray-500">Deep learning analysis with DenseNet201 architecture (19.3M parameters)</p>
               </div>
             </CardContent>
           </Card>

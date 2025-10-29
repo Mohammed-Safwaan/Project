@@ -1,6 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -26,69 +27,28 @@ import {
 import Image from "next/image"
 import Link from "next/link"
 
-// Mock data - in real app this would come from API
-const historyData = [
-  {
-    id: "scan_001",
-    date: "2024-01-15T10:30:00Z",
-    image: "/placeholder.svg?key=hist1",
-    condition: "Melanoma",
-    confidence: 87,
-    riskLevel: "high",
-    status: "completed",
-    notes: "Irregular borders detected",
-  },
-  {
-    id: "scan_002",
-    date: "2024-01-12T14:15:00Z",
-    image: "/placeholder.svg?key=hist2",
-    condition: "Benign Mole",
-    confidence: 94,
-    riskLevel: "low",
-    status: "completed",
-    notes: "Regular pattern, no concerns",
-  },
-  {
-    id: "scan_003",
-    date: "2024-01-10T09:45:00Z",
-    image: "/placeholder.svg?key=hist3",
-    condition: "Atypical Nevus",
-    confidence: 76,
-    riskLevel: "medium",
-    status: "completed",
-    notes: "Monitor for changes",
-  },
-  {
-    id: "scan_004",
-    date: "2024-01-08T16:20:00Z",
-    image: "/placeholder.svg?key=hist4",
-    condition: "Seborrheic Keratosis",
-    confidence: 89,
-    riskLevel: "low",
-    status: "completed",
-    notes: "Benign skin growth",
-  },
-  {
-    id: "scan_005",
-    date: "2024-01-05T11:10:00Z",
-    image: "/placeholder.svg?key=hist5",
-    condition: "Basal Cell Carcinoma",
-    confidence: 82,
-    riskLevel: "high",
-    status: "completed",
-    notes: "Requires immediate attention",
-  },
-  {
-    id: "scan_006",
-    date: "2024-01-03T13:30:00Z",
-    image: "/placeholder.svg?key=hist6",
-    condition: "Dermatofibroma",
-    confidence: 91,
-    riskLevel: "low",
-    status: "completed",
-    notes: "Common benign lesion",
-  },
-]
+// Types for prediction history
+interface PredictionHistory {
+  prediction_id: string
+  filename: string
+  timestamp: string
+  result: {
+    class_name: string
+    confidence: number
+    description: string
+    is_malignant: boolean
+    risk_level: string
+  }
+  processing_time: number
+  image_info: {
+    width: number
+    height: number
+    format: string
+    size_bytes: number
+  }
+}
+
+
 
 const getRiskColor = (riskLevel: string) => {
   switch (riskLevel) {
@@ -120,24 +80,54 @@ export function HistoryContent() {
   const [searchTerm, setSearchTerm] = useState("")
   const [filterRisk, setFilterRisk] = useState<string>("all")
   const [sortBy, setSortBy] = useState<"date" | "condition" | "confidence">("date")
+  const [historyData, setHistoryData] = useState<PredictionHistory[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const router = useRouter()
+
+  // Fetch prediction history from API
+  useEffect(() => {
+    const fetchHistory = async () => {
+      try {
+        setLoading(true)
+        const response = await fetch('http://localhost:5000/api/predictions')
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`)
+        }
+        
+        const data = await response.json()
+        setHistoryData(data.predictions || [])
+        setError(null)
+      } catch (err) {
+        console.error('Error fetching history:', err)
+        setError('Failed to load scan history. Please ensure the backend server is running.')
+        setHistoryData([])
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchHistory()
+  }, [])
 
   const filteredData = historyData
     .filter((item) => {
       const matchesSearch =
-        item.condition.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.notes.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.id.toLowerCase().includes(searchTerm.toLowerCase())
-      const matchesFilter = filterRisk === "all" || item.riskLevel === filterRisk
+        item.result.class_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        item.result.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        item.prediction_id.toLowerCase().includes(searchTerm.toLowerCase())
+      const matchesFilter = filterRisk === "all" || item.result.risk_level.toLowerCase() === filterRisk
       return matchesSearch && matchesFilter
     })
     .sort((a, b) => {
       switch (sortBy) {
         case "date":
-          return new Date(b.date).getTime() - new Date(a.date).getTime()
+          return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
         case "condition":
-          return a.condition.localeCompare(b.condition)
+          return a.result.class_name.localeCompare(b.result.class_name)
         case "confidence":
-          return b.confidence - a.confidence
+          return b.result.confidence - a.result.confidence
         default:
           return 0
       }
@@ -154,10 +144,38 @@ export function HistoryContent() {
   }
 
   const riskCounts = {
-    high: historyData.filter((item) => item.riskLevel === "high").length,
-    medium: historyData.filter((item) => item.riskLevel === "medium").length,
-    low: historyData.filter((item) => item.riskLevel === "low").length,
+    high: historyData.filter((item) => item.result.risk_level.toLowerCase() === "high").length,
+    medium: historyData.filter((item) => item.result.risk_level.toLowerCase() === "medium").length,
+    low: historyData.filter((item) => item.result.risk_level.toLowerCase() === "low").length,
     total: historyData.length,
+  }
+
+  const handleViewDetails = (prediction: PredictionHistory) => {
+    // Store prediction result in session storage for results page
+    sessionStorage.setItem('currentPrediction', JSON.stringify(prediction))
+    router.push('/results')
+  }
+
+  const handleDeleteScan = async (predictionId: string) => {
+    if (!confirm('Are you sure you want to delete this scan? This action cannot be undone.')) {
+      return
+    }
+    
+    try {
+      const response = await fetch(`http://localhost:5000/api/predictions/${predictionId}`, {
+        method: 'DELETE'
+      })
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+      
+      // Remove from local state
+      setHistoryData(prev => prev.filter(item => item.prediction_id !== predictionId))
+    } catch (err) {
+      console.error('Error deleting scan:', err)
+      alert('Failed to delete scan. Please try again.')
+    }
   }
 
   return (
@@ -237,7 +255,7 @@ export function HistoryContent() {
             <div>
               <CardTitle>Analysis History</CardTitle>
               <CardDescription>
-                {filteredData.length} of {historyData.length} scans shown
+                {loading ? "Loading..." : `${filteredData.length} of ${historyData.length} scans shown`}
               </CardDescription>
             </div>
             <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
@@ -296,46 +314,59 @@ export function HistoryContent() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredData.map((scan) => {
-                  const RiskIcon = getRiskIcon(scan.riskLevel)
+                {loading ? (
+                  <TableRow>
+                    <TableCell colSpan={8} className="text-center py-8">
+                      Loading scan history...
+                    </TableCell>
+                  </TableRow>
+                ) : error ? (
+                  <TableRow>
+                    <TableCell colSpan={8} className="text-center py-8 text-red-600">
+                      {error}
+                    </TableCell>
+                  </TableRow>
+                ) : filteredData.map((scan) => {
+                  const RiskIcon = getRiskIcon(scan.result.risk_level.toLowerCase())
+                  const imageUrl = `http://localhost:5000/api/image/${scan.filename}`
                   return (
-                    <TableRow key={scan.id} className="hover:bg-gray-50">
+                    <TableRow key={scan.prediction_id} className="hover:bg-gray-50">
                       <TableCell>
                         <div className="relative w-12 h-12 rounded-lg overflow-hidden bg-gray-100">
                           <Image
-                            src={scan.image || "/placeholder.svg"}
-                            alt={`Scan ${scan.id}`}
+                            src={imageUrl || "/placeholder.svg"}
+                            alt={`Scan ${scan.prediction_id}`}
                             fill
                             className="object-cover"
                           />
                         </div>
                       </TableCell>
-                      <TableCell className="font-medium">{scan.id}</TableCell>
+                      <TableCell className="font-medium">{scan.prediction_id}</TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2 text-sm">
                           <Calendar className="h-4 w-4 text-gray-400" />
-                          {formatDate(scan.date)}
+                          {formatDate(scan.timestamp)}
                         </div>
                       </TableCell>
                       <TableCell>
-                        <span className="font-medium">{scan.condition}</span>
+                        <span className="font-medium">{scan.result.class_name}</span>
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">
-                          <span className="font-medium">{scan.confidence}%</span>
+                          <span className="font-medium">{(scan.result.confidence * 100).toFixed(1)}%</span>
                           <div className="w-16 h-2 bg-gray-200 rounded-full overflow-hidden">
-                            <div className="h-full bg-blue-500 rounded-full" style={{ width: `${scan.confidence}%` }} />
+                            <div className="h-full bg-blue-500 rounded-full" style={{ width: `${scan.result.confidence * 100}%` }} />
                           </div>
                         </div>
                       </TableCell>
                       <TableCell>
-                        <Badge className={getRiskColor(scan.riskLevel)}>
+                        <Badge className={getRiskColor(scan.result.risk_level.toLowerCase())}>
                           <RiskIcon className="h-3 w-3 mr-1" />
-                          {scan.riskLevel.toUpperCase()}
+                          {scan.result.risk_level.toUpperCase()}
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <span className="text-sm text-gray-600">{scan.notes}</span>
+                        <span className="text-sm text-gray-600">{scan.result.description}</span>
                       </TableCell>
                       <TableCell>
                         <DropdownMenu>
@@ -345,19 +376,30 @@ export function HistoryContent() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
-                            <DropdownMenuItem className="flex items-center gap-2">
+                            <DropdownMenuItem 
+                              className="flex items-center gap-2"
+                              onClick={() => handleViewDetails(scan)}
+                            >
                               <Eye className="h-4 w-4" />
                               View Details
                             </DropdownMenuItem>
-                            <DropdownMenuItem className="flex items-center gap-2">
+                            <DropdownMenuItem 
+                              className="flex items-center gap-2"
+                              onClick={() => {
+                                window.open(`http://localhost:5000/api/report/${scan.prediction_id}`, '_blank')
+                              }}
+                            >
                               <Download className="h-4 w-4" />
-                              Download Report
+                              Download PDF Report
                             </DropdownMenuItem>
                             <DropdownMenuItem className="flex items-center gap-2">
                               <Share2 className="h-4 w-4" />
                               Share Results
                             </DropdownMenuItem>
-                            <DropdownMenuItem className="flex items-center gap-2 text-red-600">
+                            <DropdownMenuItem 
+                              className="flex items-center gap-2 text-red-600"
+                              onClick={() => handleDeleteScan(scan.prediction_id)}
+                            >
                               <Trash2 className="h-4 w-4" />
                               Delete Scan
                             </DropdownMenuItem>
